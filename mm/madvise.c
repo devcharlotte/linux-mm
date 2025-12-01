@@ -81,8 +81,11 @@ struct madvise_behavior {
 	bool lock_dropped;
 };
 
+
+// [jh] ksm 플래그에 따라 분기 처리 
 #ifdef CONFIG_ANON_VMA_NAME
 static int madvise_walk_vmas(struct madvise_behavior *madv_behavior);
+
 
 struct anon_vma_name *anon_vma_name_alloc(const char *name)
 {
@@ -1868,7 +1871,7 @@ static int madvise_do_behavior(unsigned long start, size_t len_in,
 	struct blk_plug plug;
 	int error;
 	struct madvise_behavior_range *range = &madv_behavior->range;
-
+	
 	if (is_memory_failure(madv_behavior)) {
 		range->start = start;
 		range->end = start + len_in;
@@ -1922,9 +1925,13 @@ static int madvise_do_behavior(unsigned long start, size_t len_in,
  *  MADV_HWPOISON - trigger memory error handler as if the given memory range
  *		were corrupted by unrecoverable hardware memory failure.
  *  MADV_SOFT_OFFLINE - try to soft-offline the given range of memory.
+ *
+ *  // [jh] ksm 관련 플래그그
  *  MADV_MERGEABLE - the application recommends that KSM try to merge pages in
  *		this area with pages of identical content from other such areas.
  *  MADV_UNMERGEABLE- cancel MADV_MERGEABLE: no longer merge pages with others.
+ *
+ *
  *  MADV_HUGEPAGE - the application wants to back the given range by transparent
  *		huge pages in the future. Existing pages might be coalesced and
  *		new pages might be allocated as THP.
@@ -1959,6 +1966,8 @@ static int madvise_do_behavior(unsigned long start, size_t len_in,
  *  -EAGAIN - a kernel resource was temporarily unavailable.
  *  -EPERM  - memory is sealed.
  */
+
+// [jh] ksm_madvise와 관련
 int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int behavior)
 {
 	int error;
@@ -1982,6 +1991,8 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 	return error;
 }
 
+// [jh] 유저가 madvise(addr,len,MADV_MERGEABLE) 호출하면
+// 	커널이 do_madvise() 실행하도록
 SYSCALL_DEFINE3(madvise, unsigned long, start, size_t, len_in, int, behavior)
 {
 	return do_madvise(current->mm, start, len_in, behavior);
