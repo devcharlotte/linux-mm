@@ -1404,6 +1404,8 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
 			return -EINVAL;
 		new_flags &= ~VM_DONTDUMP;
 		break;
+
+	// [jh] ksm 플래그에 대해 madvise가 동작하는 경우 ksm_madvise가 호출됨
 	case MADV_MERGEABLE:
 	case MADV_UNMERGEABLE:
 		error = ksm_madvise(vma, range->start, range->end,
@@ -1411,6 +1413,7 @@ static int madvise_vma_behavior(struct madvise_behavior *madv_behavior)
 		if (error)
 			goto out;
 		break;
+		
 	case MADV_HUGEPAGE:
 	case MADV_NOHUGEPAGE:
 		error = hugepage_madvise(vma, &new_flags, behavior);
