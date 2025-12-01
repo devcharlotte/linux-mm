@@ -2755,12 +2755,29 @@ static void ksm_do_scan(unsigned int scan_npages)
 // [jh] 	    2)  시스템 중단 요청에 따라 ksmd가 freeze 요청을 받았다면 중단
 	
 	while (scan_npages-- && likely(!freezing(current))) {
-		cond_resched();
+		cond_resched();  // [jh] cpu를 ksmd가 독점하지 않게 스케쥴러에게 양보
+
+  		// [jh] 모든 프로세스 의 mergeable vma에 대해 
+		//	ksm_rmap_item을 하나 가져옴
+		//	remap_item이 가리키는 실제 page를 page 인자로 리턴
+		// = 익명 페이지 중에서 하나씩 머지 수행 후보로 가져오는 역할
 		rmap_item = scan_get_next_rmap_item(&page);
+
+		// 더 스캔할 페이지가 없으면 종료 리턴
 		if (!rmap_item)
 			return;
+
+		// [jh] 페이지가 완전히 동일한지 비교하고 
+		// 같으면 머지 후 stable tree, 매핑 업데이트
+		// 다르면 unstable tree에, 다음 스캔에서 다른 페이지와 비교하는 후보가 될 수 있게 
 		cmp_and_merge_page(page, rmap_item);
+
+		// [jh] 페이지를 사용중인지 확인하는 ref cnt 값을 
+		//	ksm 작업 중에 1로 get page하기 때문에 다시 1 put page 해야함
 		put_page(page);
+
+		// [jh] 실제로 얼마나 많은 페이지를 스캔했는지 카운트
+		// = 이 함수 전체가 한 페이지에 대해 동작한 것  
 		ksm_pages_scanned++;
 	}
 }
