@@ -1868,12 +1868,13 @@ static inline unsigned long get_untagged_addr(struct mm_struct *mm,
 				   untagged_addr_remote(mm, start);
 }
 
+// [jh] madvise 실제 동작 함수 
 static int madvise_do_behavior(unsigned long start, size_t len_in,
 		struct madvise_behavior *madv_behavior)
 {
 	struct blk_plug plug;
 	int error;
-	struct madvise_behavior_range *range = &madv_behavior->range;
+	struct madvise_behavior_range *range = &madv_behavior->range;  // [jh] madvise 구간 범위 담는 구조체
 	
 	if (is_memory_failure(madv_behavior)) {
 		range->start = start;
@@ -1881,14 +1882,19 @@ static int madvise_do_behavior(unsigned long start, size_t len_in,
 		return madvise_inject_error(madv_behavior);
 	}
 
+	// [jh] 해당 구간의 vma에 대해 ksm 처리
 	range->start = get_untagged_addr(madv_behavior->mm, start);
 	range->end = range->start + PAGE_ALIGN(len_in);
 
 	blk_start_plug(&plug);
+
+	// 실제 작업으로 분
 	if (is_madvise_populate(madv_behavior))
 		error = madvise_populate(madv_behavior);
-	else
+	else    // [jh] populate가 아닌 모든 behavior flag 수행 
+		// = mergeable, unmergeable, dontneed, hugepage, nohugepage
 		error = madvise_walk_vmas(madv_behavior);
+	
 	blk_finish_plug(&plug);
 	return error;
 }
@@ -1975,6 +1981,9 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 {
 	int error;
 	struct mmu_gather tlb;
+
+	// [jh] madvise 수행 위한 구조체
+	// behavior 값은 mergeable, unmergeable
 	struct madvise_behavior madv_behavior = {
 		.mm = mm,
 		.behavior = behavior,
@@ -1983,11 +1992,17 @@ int do_madvise(struct mm_struct *mm, unsigned long start, size_t len_in, int beh
 
 	if (madvise_should_skip(start, len_in, behavior, &error))
 		return error;
+
+	// [jh] vma 에 대한 락 얻고 tlb 초기화
 	error = madvise_lock(&madv_behavior);
-	if (error)
+	if (error) // 락을 못 얻었으면 종료
 		return error;
 	madvise_init_tlb(&madv_behavior);
+
+	// [jh] 실제 작업
 	error = madvise_do_behavior(start, len_in, &madv_behavior);
+
+	// [jh] 마무리
 	madvise_finish_tlb(&madv_behavior);
 	madvise_unlock(&madv_behavior);
 
