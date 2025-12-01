@@ -2953,32 +2953,51 @@ int ksm_disable(struct mm_struct *mm)
 	return ksm_del_vmas(mm);
 }
 
+
+// [jh] madvise 요청이 들어왔을 때 해당 vma에 대해 ksm merge 여부 결정 = vma 레벨 (ksm 동작 단위)
+// 	필요시 프로세스 전체를 ksm 엔진에 등록 = mm 레벨 (스캐너 단위)
+//	mm 구조체를 ksm global list에 등록하지 않으면 mergeable flag여도 스캐너가 스캔할 수 없음
 int ksm_madvise(struct vm_area_struct *vma, unsigned long start,
 		unsigned long end, int advice, vm_flags_t *vm_flags)
 {
+	// [jh] vma가 속해 있는 프로세스의 mm struct를 가져와야 함
+	//	madvise 요청이 vma 단위로 처리되지만 프로세스 전체가 ksm engine에 참여해야하기 때
 	struct mm_struct *mm = vma->vm_mm;
 	int err;
 
 	switch (advice) {
-	case MADV_MERGEABLE:
+	case MADV_MERGEABLE: 
+		
+		// [jh] 이미 mergeable 상태 = 최적화된 ksm 대상
 		if (vma->vm_flags & VM_MERGEABLE)
 			return 0;
-		if (!vma_ksm_compatible(vma))
+		
+		// [jh] ksm이 동작할 수 없는 대상인지 검증 = 익명 메모리에서만 동작
+		if (!vma_ksm_compatible(vma))  
 			return 0;
 
+		// [jh] mm 구조체가 아직 ksm에 등록되지 않았다면 등록
+		//	MMF_VM_MERGEABLE flag = 이 구조체는 ksm 엔진이 스캔해야하는 대상이다
+		//	처음 madvise를 호출한 프로세스라면 등록되어 있지 않을 것...!!
 		if (!mm_flags_test(MMF_VM_MERGEABLE, mm)) {
 			err = __ksm_enter(mm);
 			if (err)
 				return err;
 		}
 
+		// [jh] vma를 ksm 대상으로 표시
+		//	ksm 스캐너인 ksm가 이제 scan get next rmap item을 수행할 때 
+		//	이 vma의 익명 페이지를 후보로 스캔하게 됨
 		*vm_flags |= VM_MERGEABLE;
 		break;
 
 	case MADV_UNMERGEABLE:
+
+		// [jh] 이미 ksm 대상에서 제외되었음
 		if (!(*vm_flags & VM_MERGEABLE))
 			return 0;		/* just ignore the advice */
 
+		// [jh] 이미 merge된 페이지가 있어서 unmerge 필
 		if (vma->anon_vma) {
 			err = unmerge_ksm_pages(vma, start, end, true);
 			if (err)
@@ -2993,12 +3012,19 @@ int ksm_madvise(struct vm_area_struct *vma, unsigned long start,
 }
 EXPORT_SYMBOL_GPL(ksm_madvise);
 
+
+// [jh] merge 가능한 vma가 생겼을 때 
+//	프로세스를 ksm이 스캔할 수 있도록
+//	ksmd가 이 mm의 익명 페이지를 스캔할 수 있게 리스트에 등록
 int __ksm_enter(struct mm_struct *mm)
-{
-	struct ksm_mm_slot *mm_slot;
+{	
+	// [jh] ksm 엔진이 관리하는 리스트 = mm_slot
+	//	각 프로세스 mm은 mm_slot 하나씩 가짐
+	struct ksm_mm_slot *mm_slot; 
 	struct mm_slot *slot;
 	int needs_wakeup;
 
+	// [jh] 새 프로세스를 넣기 위해 새 슬롯 할당
 	mm_slot = mm_slot_alloc(mm_slot_cache);
 	if (!mm_slot)
 		return -ENOMEM;
@@ -3006,10 +3032,13 @@ int __ksm_enter(struct mm_struct *mm)
 	slot = &mm_slot->slot;
 
 	/* Check ksm_run too?  Would need tighter locking */
+	// [jh] ksm 스캐너가 순회할 mm 리스트의 head
+	// 	empty라면 스캔할 프로세스가 없음 but 지금 하나 추가하고 있으니 깨워야 함
 	needs_wakeup = list_empty(&ksm_mm_head.slot.mm_node);
 
 	spin_lock(&ksm_mmlist_lock);
 	mm_slot_insert(mm_slots_hash, mm, slot);
+	
 	/*
 	 * When KSM_RUN_MERGE (or KSM_RUN_STOP),
 	 * insert just behind the scanning cursor, to let the area settle
