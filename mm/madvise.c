@@ -1682,6 +1682,7 @@ int madvise_walk_vmas(struct madvise_behavior *madv_behavior)
 		
 		if (error)
 			return error;
+		
 		if (madv_behavior->lock_dropped) {
 			/* We dropped the mmap lock, we can't ref the VMA. */
 			prev = NULL;
@@ -1692,11 +1693,13 @@ int madvise_walk_vmas(struct madvise_behavior *madv_behavior)
 			prev = vma;
 		}
 
+		// [jh] vma 단위로 범위 조정 
 		if (vma && range->end < vma->vm_end)
 			range->end = vma->vm_end;
 		if (range->end >= last_end)
 			break;
 
+		// [jh] 현재 vma에 대해 madvise 수행 완료했으니 다음 vma로 이동
 		vma = find_vma(mm, vma ? vma->vm_end : range->end);
 		range->start = range->end;
 	}
