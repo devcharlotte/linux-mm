@@ -2744,11 +2744,16 @@ no_vmas:
  * ksm_do_scan  - the ksm scanner main worker function.
  * @scan_npages:  number of pages we want to scan before we return.
  */
+
+// [jh] ksmd 스레드가 실제 페이지를 하나씩 스캔하고 머지를 시도하는 워커 함수
+// [jh] 한 사이클의 스캔 작업을 수행 (페이지 후보 하나를 꺼내서 머지 가능 여부 비교 후 머지 여부에 따라 리스트 재배치)
 static void ksm_do_scan(unsigned int scan_npages)
 {
 	struct ksm_rmap_item *rmap_item;
 	struct page *page;
-
+// [jh] while문 조건 1) 현재 사이클에서 스캔해야하는 pages_to_scan 만큼 반복
+// [jh] 	    2)  시스템 중단 요청에 따라 ksmd가 freeze 요청을 받았다면 중단
+	
 	while (scan_npages-- && likely(!freezing(current))) {
 		cond_resched();
 		rmap_item = scan_get_next_rmap_item(&page);
