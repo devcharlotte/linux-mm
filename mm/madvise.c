@@ -1653,6 +1653,8 @@ int madvise_walk_vmas(struct madvise_behavior *madv_behavior)
 			return -ENOMEM;
 
 		/* Here start < (last_end|vma->vm_end). */
+		// [jh] range->start 구간이 현재 vma 시작보다 앞에 있음
+		//	= 요청된 madvise 범위 안에 unmapped 구간이 포함되어 있음
 		if (range->start < vma->vm_start) {
 			/*
 			 * This indicates a gap between VMAs in the input
@@ -1660,19 +1662,24 @@ int madvise_walk_vmas(struct madvise_behavior *madv_behavior)
 			 * rather we simply return -ENOMEM to indicate that this
 			 * has happened, but carry on.
 			 */
-			unmapped_error = -ENOMEM;
+			unmapped_error = -ENOMEM; // 에러로 여기지만 작업을 중단하지는 않고 unmapped 구간을 표시만 함
+
+			// [jh] range->start를 vma 시작으로 조정해서 범위가 last_end를 넘으면 종료
 			range->start = vma->vm_start;
 			if (range->start >= last_end)
 				break;
 		}
 
 		/* Here vma->vm_start <= range->start < (last_end|vma->vm_end) */
+		// [jh] vma 단위로 처리하는 madvise .. vma 경계를 넘지 않도록 끝지점 계산
 		range->end = min(vma->vm_end, last_end);
 
 		/* Here vma->vm_start <= range->start < range->end <= (last_end|vma->vm_end). */
+		// [jh] ksm madvise 실행 지점
 		madv_behavior->prev = prev;
 		madv_behavior->vma = vma;
-		error = madvise_vma_behavior(madv_behavior);
+		error = madvise_vma_behavior(madv_behavior); // [jh] 실제 ksm flag에 대해 처리하는 ksm_madvise 호출됨
+		
 		if (error)
 			return error;
 		if (madv_behavior->lock_dropped) {
