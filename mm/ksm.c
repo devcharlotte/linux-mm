@@ -3036,6 +3036,7 @@ int __ksm_enter(struct mm_struct *mm)
 	// 	empty라면 스캔할 프로세스가 없음 but 지금 하나 추가하고 있으니 깨워야 함
 	needs_wakeup = list_empty(&ksm_mm_head.slot.mm_node);
 
+	// [jh] 글로벌 자료구조니까 락을 얻고 등록하기
 	spin_lock(&ksm_mmlist_lock);
 	mm_slot_insert(mm_slots_hash, mm, slot);
 	
@@ -3049,21 +3050,33 @@ int __ksm_enter(struct mm_struct *mm)
 	 * scanning cursor, otherwise KSM pages in newly forked mms will be
 	 * missed: then we might as well insert at the end of the list.
 	 */
-	if (ksm_run & KSM_RUN_UNMERGE)
+
+	// [jh] mm을 mm_list에 삽입할 때 위치를 결정해주는 부분  (여기 로직 다시 보기)
+	if (ksm_run & KSM_RUN_UNMERGE)    // 리스트 맨 뒤에 삽입 
 		list_add_tail(&slot->mm_node, &ksm_mm_head.slot.mm_node);
-	else
-		list_add_tail(&slot->mm_node, &ksm_scan.mm_slot->slot.mm_node);
+	else   // 현재 스캔 중인 mm 뒤에 삽입
+		list_add_tail(&slot->mm_node, &ksm_scan.mm_slot->slot.mm_node);   
+
+	// [jh] 작업이 끝났으니 언락
 	spin_unlock(&ksm_mmlist_lock);
 
+	// [jh] mergeable vma가 하나 이상 있어서 ksm 엔진이 스캔해야하는 프로세스, ksm 엔진에 의해 관리되는 mm
 	mm_flags_set(MMF_VM_MERGEABLE, mm);
+
+	// [jh] mm_struct의 ref cnt 증가시킴 (여기 이유 다시 보기)
 	mmgrab(mm);
 
+	// [jh] 스레드 깨울 필요 있으면 깨우기 
+	//	= 기존 리스트가 비워있을 때 깨워서 스캔해야함 
+	//	= mergeable vma가 처음 등장한 프로세스는 즉시 스캔 대상
 	if (needs_wakeup)
 		wake_up_interruptible(&ksm_thread_wait);
 
 	trace_ksm_enter(mm);
 	return 0;
 }
+
+
 
 void __ksm_exit(struct mm_struct *mm)
 {
