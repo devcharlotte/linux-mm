@@ -37,8 +37,9 @@ struct ksm_sysfs {
 	unsigned long use_zero_pages;
 };
 
+// [jh] 메인에서 -t 옵션으로 madvise=0, prctl=1 테스트 방식 선택할 수 있음
 enum ksm_merge_type {
-	KSM_MERGE_MADVISE,
+	KSM_MERGE_MADVISE, 
 	KSM_MERGE_PRCTL,
 	KSM_MERGE_LAST = KSM_MERGE_PRCTL
 };
@@ -213,25 +214,31 @@ static int ksm_do_scan(int scan_count, struct timespec start_time, int timeout)
 	return 0;
 }
 
+// [jh] 선택한 옵션에 맞게 테스트 프로그램이 동작하도록
 static int ksm_merge_pages(int merge_type, void *addr, size_t size,
 			struct timespec start_time, int timeout)
-{
+{	
+	// [jh] madvise : 특정한 주소 범위인 vma에 대해서
 	if (merge_type == KSM_MERGE_MADVISE) {
 		if (madvise(addr, size, MADV_MERGEABLE)) {
 			perror("madvise");
 			return 1;
 		}
-	} else if (merge_type == KSM_MERGE_PRCTL) {
-		if (prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0)) {
+	} 
+	// [jh] prctl : 호출한 프로세스 전체에 대해 ksm 대상으로 전환
+	else if (merge_type == KSM_MERGE_PRCTL) {
+		if (prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0)) { // 1 = enable
 			perror("prctl");
 			return 1;
 		}
 	}
 
+	// [jh] echo 1 > /sys/kernel/mm/ksm/run 
 	if (ksm_write_sysfs(KSM_FP("run"), 1))
 		return 1;
 
 	/* Since merging occurs only after 2 scans, make sure to get at least 2 full scans */
+	// [jh] 충분히 ksmd가 스캔할 때까지 대기 (ksm_do_scan이 루프)
 	if (ksm_do_scan(2, start_time, timeout))
 		return 1;
 
