@@ -3,7 +3,7 @@
 /*
 sudo ./b merge=madv smart=off advisor=none
 sudo ./b merge=madv smart=on advisor=none
-sudo ./b merge=madv smart=off advisor=scan-time
+sudo ./b merge=madv smart=on advisor=scan-time
 
 */
 
