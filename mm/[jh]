@@ -145,7 +145,7 @@ int main(int argc, char **argv){
     // start KSM
     //--------------------------------------------------
     printf("[INFO] Starting KSM...\n");
-    write_sys_num("/sys/kernel/mm/ksm/run", 1);
+    write_sys_num("/sys/kernel/mm/ksm/run", 2);   // 완전한 초기화 후 시작하려면 2
 
     //--------------------------------------------------
     // output header
