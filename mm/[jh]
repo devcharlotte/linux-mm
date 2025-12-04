@@ -1,0 +1,142 @@
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/prctl.h>
+
+#define GB(x) ((size_t)(x) << 30)
+#define CHUNK (64*1024*1024)
+#define PATTERN 0x42
+
+// sysfs 읽기
+long read_sys(const char *p){
+    long v=0; FILE*f=fopen(p,"r");
+    if(!f) return -1;
+    fscanf(f,"%ld",&v);
+    fclose(f);
+    return v;
+}
+
+// sysfs 숫자 쓰기
+int write_sys_num(const char*p,long v){
+    FILE*f=fopen(p,"w");
+    if(!f){ perror("write_sys_num"); return -1; }
+    fprintf(f,"%ld",v);
+    fclose(f);
+    return 0;
+}
+
+// sysfs 문자열 쓰기
+int write_sys_str(const char*p,const char*s){
+    FILE*f=fopen(p,"w");
+    if(!f){ perror("write_sys_str"); return -1; }
+    fprintf(f,"%s",s);
+    fclose(f);
+    return 0;
+}
+
+// KSM 완전 초기화 함수
+void reset_ksm() {
+    printf("[KSM] Resetting KSM state...\n");
+
+    write_sys_num("/sys/kernel/mm/ksm/run", 0);            // 스레드 일단 중단
+    write_sys_num("/sys/kernel/mm/ksm/pages_to_scan", 100);
+    write_sys_num("/sys/kernel/mm/ksm/sleep_millisecs", 100);
+
+    write_sys_str("/sys/kernel/mm/ksm/smart_scan", "0");
+    write_sys_str("/sys/kernel/mm/ksm/advisor_mode", "none");
+
+    // run=0이면 internal 리스트를 걷지 않으므로 사실상 초기화 상태 달성
+    sleep(1);
+}
+
+int main(){
+    // 초기 세팅 
+    size_t total_gb = 10; // 10GB 실험이 20분 넘게 소요
+    size_t bytes = GB(total_gb);
+    size_t chunks = bytes / CHUNK;
+
+    printf("[INFO] Allocating %zu chunks (%zu MB each) = %zu GB\n",
+           chunks, CHUNK >> 20, total_gb);
+
+    void **ptr = malloc(sizeof(void*) * chunks);
+
+    // 0) KSM 완전 초기화
+    reset_ksm();
+
+    // 1) 메모리 mmap + madvise
+    for(size_t i=0;i<chunks;i++){
+        ptr[i] = mmap(NULL, CHUNK,
+                       PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS,
+                       -1, 0);
+
+        if(ptr[i] == MAP_FAILED){
+            perror("mmap");
+            exit(1);
+        }
+
+        if(madvise(ptr[i], CHUNK, MADV_MERGEABLE) != 0){
+            perror("madvise(MERGEABLE)");
+            exit(1);
+        }
+
+        // Fault 강제 발생 → VMA가 실제 anonymous page로 채워짐
+        mlock(ptr[i], CHUNK);
+    }
+
+    printf("[INFO] Filling memory with 0x%02x...\n", PATTERN);
+    for(size_t i=0;i<chunks;i++){
+        memset(ptr[i], PATTERN, CHUNK);
+    }
+
+    // 2) KSM 파라미터 재설정
+    write_sys_num("/sys/kernel/mm/ksm/pages_to_scan", 20000);
+    write_sys_num("/sys/kernel/mm/ksm/sleep_millisecs", 20);
+
+    sleep(1);  // 준비 시간
+
+    // 3) KSM 시작
+    printf("[INFO] Starting KSM...\n");
+    write_sys_num("/sys/kernel/mm/ksm/run", 1);
+
+    printf("[INFO] Measuring...\n");
+
+    long last_shared = -1;
+    long stable = 0;
+
+    for(long s = 1; ; s++){
+        long shared  = read_sys("/sys/kernel/mm/ksm/pages_shared");
+        long sharing = read_sys("/sys/kernel/mm/ksm/pages_sharing");
+        long scans   = read_sys("/sys/kernel/mm/ksm/full_scans");
+
+        printf("[%lds] shared=%ld sharing=%ld scans=%ld\n",
+               s, shared, sharing, scans);
+
+        if(shared == last_shared) stable++;
+        else stable = 0;
+
+        last_shared = shared;
+
+        if(stable > 10 && scans > 0){
+            printf("[INFO] Converged.\n");
+            break;
+        }
+
+        sleep(1);
+    }
+
+    printf("[INFO] Freeing memory...\n");
+    for(size_t i=0;i<chunks;i++){
+        munmap(ptr[i], CHUNK);
+    }
+    free(ptr);
+
+    printf("[INFO] Done.\n");
+    return 0;
+}
