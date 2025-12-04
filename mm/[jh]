@@ -1,3 +1,12 @@
+// gcc -O2 -o b b.c
+// sudo ./b merge=madv smart=off advisor=none
+/*
+sudo ./b merge=madv smart=off advisor=none
+sudo ./b merge=madv smart=on advisor=none
+sudo ./b merge=madv smart=off advisor=scan-time
+
+*/
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,27 +17,24 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/prctl.h>
-#include <sys/time.h>
-#include <sys/resource.h>
-#include <stddef.h>
+#include <time.h>
 
 #define GB(x) ((size_t)(x) << 30)
 #define CHUNK (64*1024*1024)
 #define PATTERN 0x42
 
 //--------------------------------------------------
-// sysfs helpers
+// sysfs 읽기/쓰기
 //--------------------------------------------------
 long read_sys(const char *p){
-    long v=0;
-    FILE*f=fopen(p,"r");
+    long v=0; FILE*f=fopen(p,"r");
     if(!f) return -1;
     fscanf(f,"%ld",&v);
     fclose(f);
     return v;
 }
 
-int write_sys_num(const char*p,long v){
+int write_sys_num(const char *p,long v){
     FILE*f=fopen(p,"w");
     if(!f){ perror("write_sys_num"); return -1; }
     fprintf(f,"%ld",v);
@@ -36,7 +42,7 @@ int write_sys_num(const char*p,long v){
     return 0;
 }
 
-int write_sys_str(const char*p,const char*s){
+int write_sys_str(const char *p,const char*s){
     FILE*f=fopen(p,"w");
     if(!f){ perror("write_sys_str"); return -1; }
     fprintf(f,"%s",s);
@@ -45,15 +51,14 @@ int write_sys_str(const char*p,const char*s){
 }
 
 //--------------------------------------------------
-// KSM reset
+// KSM 완전 초기화
 //--------------------------------------------------
-void reset_ksm(){
-    printf("[KSM] Resetting KSM state...\n");
+void reset_ksm() {
+    printf("[KSM] Resetting...\n");
 
     write_sys_num("/sys/kernel/mm/ksm/run", 0);
     write_sys_num("/sys/kernel/mm/ksm/pages_to_scan", 100);
     write_sys_num("/sys/kernel/mm/ksm/sleep_millisecs", 100);
-
     write_sys_str("/sys/kernel/mm/ksm/smart_scan", "0");
     write_sys_str("/sys/kernel/mm/ksm/advisor_mode", "none");
 
@@ -61,26 +66,54 @@ void reset_ksm(){
 }
 
 //--------------------------------------------------
+// ksmd CPU usage 계산을 위한 함수
+//--------------------------------------------------
+pid_t get_ksmd_pid() {
+    FILE *fp = popen("pgrep ksmd", "r");
+    if (!fp) return -1;
+    pid_t pid;
+    if (fscanf(fp, "%d", &pid) != 1) {
+        pclose(fp);
+        return -1;
+    }
+    pclose(fp);
+    return pid;
+}
+
+long long read_proc_stat_sum(pid_t pid) {
+    char path[256];
+    sprintf(path, "/proc/%d/stat", pid);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    long long utime, stime;
+    int skip;
+    for (int i=1;i<=13;i++) fscanf(f, "%d", &skip);
+    fscanf(f, "%lld %lld", &utime, &stime);
+    fclose(f);
+
+    return utime + stime;
+}
+
+//--------------------------------------------------
 // main
 //--------------------------------------------------
-int main(int argc, char **argv){
+int main(int argc,char**argv){
 
-    //--------------------------------------------------
-    // default options
-    //--------------------------------------------------
     int mode_prctl = 0;
     int smart = 0;
     char advisor[32] = "none";
 
     //--------------------------------------------------
-    // parse arguments
+    // 옵션 처리
     //--------------------------------------------------
     for(int i=1;i<argc;i++){
         if(strstr(argv[i], "merge=prctl")) mode_prctl = 1;
         if(strstr(argv[i], "merge=madv"))  mode_prctl = 0;
 
-        if(strstr(argv[i], "smart=on"))    smart = 1;
-        if(strstr(argv[i], "smart=off"))   smart = 0;
+        if(strstr(argv[i], "smart=on"))  smart = 1;
+        if(strstr(argv[i], "smart=off")) smart = 0;
 
         if(strstr(argv[i], "advisor=scan")) strcpy(advisor, "scan-time");
         if(strstr(argv[i], "advisor=none")) strcpy(advisor, "none");
@@ -91,20 +124,18 @@ int main(int argc, char **argv){
     printf("[CONFIG] advisor=%s\n", advisor);
 
     //--------------------------------------------------
-    // KSM reset
+    // KSM 초기화
     //--------------------------------------------------
     reset_ksm();
 
-    //--------------------------------------------------
-    // apply KSM tunables
-    //--------------------------------------------------
+    // tunables set
     write_sys_str("/sys/kernel/mm/ksm/smart_scan", smart ? "1" : "0");
     write_sys_str("/sys/kernel/mm/ksm/advisor_mode", advisor);
     write_sys_num("/sys/kernel/mm/ksm/pages_to_scan", 20000);
     write_sys_num("/sys/kernel/mm/ksm/sleep_millisecs", 20);
 
     //--------------------------------------------------
-    // allocate memory
+    // 메모리 할당
     //--------------------------------------------------
     size_t total_gb = 5;
     size_t bytes = GB(total_gb);
@@ -116,17 +147,20 @@ int main(int argc, char **argv){
     void **ptr = malloc(sizeof(void*) * chunks);
 
     for(size_t i=0;i<chunks;i++){
-        ptr[i] = mmap(NULL, CHUNK,
-                       PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS,
-                       -1, 0);
+        ptr[i] = mmap(NULL, CHUNK, PROT_READ|PROT_WRITE,
+                      MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+
         if(ptr[i] == MAP_FAILED){
             perror("mmap");
             exit(1);
         }
 
+        // merge 등록
         if(mode_prctl){
-            prctl(PR_SET_MEMORY_MERGE, 1, 0,0,0);
+            if (prctl(PR_SET_MEMORY_MERGE, 1,0,0,0) != 0) {
+                perror("prctl");
+                exit(1);
+            }
         } else {
             if(madvise(ptr[i], CHUNK, MADV_MERGEABLE)){
                 perror("madvise");
@@ -137,27 +171,40 @@ int main(int argc, char **argv){
         mlock(ptr[i], CHUNK);
     }
 
+    //--------------------------------------------------
+    // 패턴 채움
+    //--------------------------------------------------
     printf("[INFO] Filling memory...\n");
     for(size_t i=0;i<chunks;i++)
         memset(ptr[i], PATTERN, CHUNK);
 
     //--------------------------------------------------
-    // start KSM
+    // KSM 시작(run=2: 전체 unmerge 후 clean 시작)
     //--------------------------------------------------
-    printf("[INFO] Starting KSM...\n");
-    write_sys_num("/sys/kernel/mm/ksm/run", 2);   // 완전한 초기화 후 시작하려면 2
+    write_sys_num("/sys/kernel/mm/ksm/run", 2);
+    sleep(1);
 
     //--------------------------------------------------
-    // output header
+    // CPU 계산 준비
+    //--------------------------------------------------
+    pid_t ksmd = get_ksmd_pid();
+    long ticks = sysconf(_SC_CLK_TCK);
+
+    long long last_ticks = read_proc_stat_sum(ksmd);
+    struct timespec last_ts;
+    clock_gettime(CLOCK_MONOTONIC, &last_ts);
+
+    //--------------------------------------------------
+    // 출력 헤더
     //--------------------------------------------------
     printf("\n%-6s %-10s %-10s %-10s %-10s %-10s %-10s %-10s\n",
            "sec","shared","sharing","unshared","volatile",
            "scans","profit","ksmd_cpu");
 
     //--------------------------------------------------
-    // measurement loop
+    // 측정 루프
     //--------------------------------------------------
-    long last_shared=-1, stable=0;
+    long last_shared = -1, stable = 0;
 
     for(long s=1;;s++){
         long shared   = read_sys("/sys/kernel/mm/ksm/pages_shared");
@@ -166,10 +213,25 @@ int main(int argc, char **argv){
         long vol      = read_sys("/sys/kernel/mm/ksm/pages_volatile");
         long scans    = read_sys("/sys/kernel/mm/ksm/full_scans");
         long profit   = read_sys("/sys/kernel/mm/ksm/general_profit");
-        long cpu      = read_sys("/sys/kernel/mm/ksm/cpu_usage");
 
-        printf("%-6ld %-10ld %-10ld %-10ld %-10ld %-10ld %-10ld %-10ld\n",
-               s, shared, sharing, unshared, vol, scans, profit, cpu);
+        // CPU 계산
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (now.tv_sec - last_ts.tv_sec)
+                       + (now.tv_nsec - last_ts.tv_nsec)/1e9;
+
+        long long cur_ticks = read_proc_stat_sum(ksmd);
+        long long delta = cur_ticks - last_ticks;
+
+        double ksmd_cpu = 0.0;
+        if (elapsed > 0)
+            ksmd_cpu = (delta/(double)ticks) / elapsed * 100.0;
+
+        last_ticks = cur_ticks;
+        last_ts = now;
+
+        printf("%-6ld %-10ld %-10ld %-10ld %-10ld %-10ld %-10ld %6.2f\n",
+               s, shared, sharing, unshared, vol, scans, profit, ksmd_cpu);
 
         if(shared == last_shared) stable++;
         else stable = 0;
@@ -179,13 +241,13 @@ int main(int argc, char **argv){
             printf("[INFO] Converged.\n");
             break;
         }
+
         sleep(1);
     }
 
     //--------------------------------------------------
-    // free
+    // 메모리 free
     //--------------------------------------------------
-    printf("[INFO] Freeing...\n");
     for(size_t i=0;i<chunks;i++)
         munmap(ptr[i], CHUNK);
     free(ptr);
